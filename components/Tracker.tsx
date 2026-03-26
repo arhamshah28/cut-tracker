@@ -296,7 +296,10 @@ export default function Tracker({ cut, profile }: TrackerProps) {
         {/* FOOD TAB */}
         {tab === "food" && (
           <div>
-            {Object.entries(cut.meal_groups).map(([cat, meals]) => (
+            {["morning", "lunch", "preworkout", "postworkout", "night"]
+              .filter((cat) => cut.meal_groups[cat])
+              .map((cat) => [cat, cut.meal_groups[cat]] as [string, typeof allMeals])
+              .map(([cat, meals]) => (
               <Card key={cat} title={CAT_LABELS[cat]} accent={CAT_ACCENTS[cat]}>
                 {meals.map((m) => (
                   <MealItem key={m.id} meal={m} on={day.meals.includes(m.id)} onTap={() => tog("meals", m.id)} />
