@@ -49,8 +49,11 @@ export function useDailyLog(userId: string | undefined, cutId: string | undefine
   const [loading, setLoading] = useState(true);
   const supabase = createClient();
   const debounceTimers = useRef(new Map<string, NodeJS.Timeout>());
-  const dataRef = useRef(data);
-  dataRef.current = data;
+  const pendingSaves = useRef(new Map<string, DayEntry>());
+  const userIdRef = useRef(userId);
+  const cutIdRef = useRef(cutId);
+  userIdRef.current = userId;
+  cutIdRef.current = cutId;
 
   const OFFLINE_KEY = `cuttracker_offline_${cutId || 'default'}`;
 
@@ -89,23 +92,71 @@ export function useDailyLog(userId: string | undefined, cutId: string | undefine
     return () => window.removeEventListener("online", handler);
   }, [userId, cutId]);
 
-  async function upsertToSupabase(date: string, entry: DayEntry) {
-    if (!userId || !cutId) return;
+  // CRITICAL: Flush pending saves when page is hidden (mobile app switch, lock screen)
+  useEffect(() => {
+    function flushPending() {
+      const uid = userIdRef.current;
+      const cid = cutIdRef.current;
+      if (!uid || !cid) return;
 
+      // Clear all debounce timers
+      debounceTimers.current.forEach((timer) => clearTimeout(timer));
+      debounceTimers.current.clear();
+
+      // Immediately save all pending changes
+      pendingSaves.current.forEach((entry, date) => {
+        upsertImmediate(uid, cid, date, entry);
+      });
+      pendingSaves.current.clear();
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        flushPending();
+      }
+    });
+
+    window.addEventListener("beforeunload", flushPending);
+
+    return () => {
+      document.removeEventListener("visibilitychange", flushPending);
+      window.removeEventListener("beforeunload", flushPending);
+    };
+  }, []);
+
+  // Immediate save (no debounce) — used for flush on visibility change
+  async function upsertImmediate(uid: string, cid: string, date: string, entry: DayEntry) {
     if (!navigator.onLine) {
       enqueueOffline(date, entry);
       return;
     }
 
-    const { error } = await supabase
-      .from("daily_logs")
-      .upsert(entryToRow(userId, date, cutId, entry), { onConflict: "user_id,date,cut_id" });
+    try {
+      const { error } = await supabase
+        .from("daily_logs")
+        .upsert(entryToRow(uid, date, cid, entry), { onConflict: "user_id,date,cut_id" });
 
-    if (error) {
+      if (error) {
+        console.error("Save error:", error);
+        enqueueOffline(date, entry);
+      } else {
+        onSaveSuccess?.();
+      }
+    } catch (e) {
+      console.error("Save exception:", e);
       enqueueOffline(date, entry);
-    } else {
-      onSaveSuccess?.();
     }
+  }
+
+  async function upsertToSupabase(date: string, entry: DayEntry) {
+    const uid = userIdRef.current;
+    const cid = cutIdRef.current;
+    if (!uid || !cid) return;
+
+    // Remove from pending since we're saving now
+    pendingSaves.current.delete(date);
+
+    await upsertImmediate(uid, cid, date, entry);
   }
 
   function enqueueOffline(date: string, entry: DayEntry) {
@@ -135,6 +186,9 @@ export function useDailyLog(userId: string | undefined, cutId: string | undefine
   }
 
   function scheduleUpsert(date: string, entry: DayEntry) {
+    // Track as pending
+    pendingSaves.current.set(date, entry);
+
     const existing = debounceTimers.current.get(date);
     if (existing) clearTimeout(existing);
 
