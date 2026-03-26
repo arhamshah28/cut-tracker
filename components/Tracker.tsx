@@ -38,8 +38,12 @@ export default function Tracker({ cut, profile }: TrackerProps) {
     user?.id,
     cut.id,
     () => {
-      setToast("Saved");
+      setToast("✓ Saved");
       setTimeout(() => setToast(null), 1500);
+    },
+    (errMsg: string) => {
+      setToast("⚠ " + errMsg);
+      setTimeout(() => setToast(null), 4000);
     }
   );
 
