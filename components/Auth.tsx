@@ -68,7 +68,7 @@ export default function Auth() {
             </span>
           </div>
           <p style={{ fontSize: 13, color: COLORS.mt, fontFamily: FONT_MONO, marginTop: 8 }}>
-            38-day weight cut tracker
+            Customizable Weight Cut Tracker
           </p>
         </div>
 

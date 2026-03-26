@@ -1,4 +1,4 @@
-import { PHASES, WCD } from "./constants";
+import type { Phase, WaterCutDay } from "./types";
 
 export function parseDate(s: string): Date {
   return new Date(s + "T12:00:00");
@@ -32,14 +32,14 @@ export function getMonthShort(s: string): string {
   return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][parseDate(s).getMonth()];
 }
 
-export function getPhase(d: string) {
-  return PHASES.find((p) => d >= p.start && d <= p.end) || PHASES[0];
+export function getPhase(d: string, phases: Phase[]) {
+  return phases.find((p) => d >= p.start && d <= p.end) || phases[0];
 }
 
-export function getCalorieTarget(d: string): number {
-  return WCD[d] ? WCD[d].calT : getPhase(d).calT;
+export function getCalorieTarget(d: string, phases: Phase[], waterCutDays: Record<string, WaterCutDay>): number {
+  return waterCutDays[d] ? waterCutDays[d].calT : getPhase(d, phases).calT;
 }
 
-export function getWaterTarget(d: string): number {
-  return WCD[d] ? WCD[d].wL : getPhase(d).wL;
+export function getWaterTarget(d: string, phases: Phase[], waterCutDays: Record<string, WaterCutDay>): number {
+  return waterCutDays[d] ? waterCutDays[d].wL : getPhase(d, phases).wL;
 }

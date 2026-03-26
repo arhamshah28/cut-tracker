@@ -16,7 +16,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "Cut Tracker",
-  description: "38-day weight cut tracking app",
+  description: "Customizable weight cut tracking app with dynamic BMR",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,

@@ -11,12 +11,11 @@ interface QueuedWrite {
   timestamp: number;
 }
 
-const OFFLINE_KEY = "cuttracker_offline_queue";
-
-function entryToRow(userId: string, date: string, entry: DayEntry) {
+function entryToRow(userId: string, date: string, cutId: string, entry: DayEntry) {
   return {
     user_id: userId,
     date,
+    cut_id: cutId,
     meals: entry.meals,
     dinner: entry.dinner,
     workout: entry.workout,
@@ -45,7 +44,7 @@ function rowToEntry(row: Record<string, unknown>): DayEntry {
   };
 }
 
-export function useDailyLog(userId: string | undefined, onSaveSuccess?: () => void) {
+export function useDailyLog(userId: string | undefined, cutId: string | undefined, onSaveSuccess?: () => void) {
   const [data, setData] = useState<Record<string, DayEntry>>({});
   const [loading, setLoading] = useState(true);
   const supabase = createClient();
@@ -53,15 +52,18 @@ export function useDailyLog(userId: string | undefined, onSaveSuccess?: () => vo
   const dataRef = useRef(data);
   dataRef.current = data;
 
+  const OFFLINE_KEY = `cuttracker_offline_${cutId || 'default'}`;
+
   // Fetch all logs on mount
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !cutId) return;
 
     async function fetchLogs() {
       const { data: rows, error } = await supabase
         .from("daily_logs")
         .select("*")
-        .eq("user_id", userId);
+        .eq("user_id", userId)
+        .eq("cut_id", cutId);
 
       if (!error && rows) {
         const mapped: Record<string, DayEntry> = {};
@@ -72,23 +74,23 @@ export function useDailyLog(userId: string | undefined, onSaveSuccess?: () => vo
       }
 
       // Replay offline queue
-      await syncQueue(userId!);
+      await syncQueue(userId!, cutId!);
       setLoading(false);
     }
 
     fetchLogs();
-  }, [userId]);
+  }, [userId, cutId]);
 
   // Listen for online event
   useEffect(() => {
-    if (!userId) return;
-    const handler = () => syncQueue(userId);
+    if (!userId || !cutId) return;
+    const handler = () => syncQueue(userId, cutId);
     window.addEventListener("online", handler);
     return () => window.removeEventListener("online", handler);
-  }, [userId]);
+  }, [userId, cutId]);
 
   async function upsertToSupabase(date: string, entry: DayEntry) {
-    if (!userId) return;
+    if (!userId || !cutId) return;
 
     if (!navigator.onLine) {
       enqueueOffline(date, entry);
@@ -97,7 +99,7 @@ export function useDailyLog(userId: string | undefined, onSaveSuccess?: () => vo
 
     const { error } = await supabase
       .from("daily_logs")
-      .upsert(entryToRow(userId, date, entry), { onConflict: "user_id,date" });
+      .upsert(entryToRow(userId, date, cutId, entry), { onConflict: "user_id,date,cut_id" });
 
     if (error) {
       enqueueOffline(date, entry);
@@ -115,7 +117,7 @@ export function useDailyLog(userId: string | undefined, onSaveSuccess?: () => vo
     } catch {}
   }
 
-  async function syncQueue(uid: string) {
+  async function syncQueue(uid: string, cid: string) {
     try {
       const queue: QueuedWrite[] = JSON.parse(localStorage.getItem(OFFLINE_KEY) || "[]");
       if (queue.length === 0) return;
@@ -124,7 +126,7 @@ export function useDailyLog(userId: string | undefined, onSaveSuccess?: () => vo
       for (const q of queue) {
         const { error } = await supabase
           .from("daily_logs")
-          .upsert(entryToRow(uid, q.date, q.entry), { onConflict: "user_id,date" });
+          .upsert(entryToRow(uid, q.date, cid, q.entry), { onConflict: "user_id,date,cut_id" });
         if (error) remaining.push(q);
       }
       localStorage.setItem(OFFLINE_KEY, JSON.stringify(remaining));
@@ -157,7 +159,7 @@ export function useDailyLog(userId: string | undefined, onSaveSuccess?: () => vo
         return next;
       });
     },
-    [userId]
+    [userId, cutId]
   );
 
   const toggleArrayField = useCallback(
@@ -176,7 +178,7 @@ export function useDailyLog(userId: string | undefined, onSaveSuccess?: () => vo
         return next;
       });
     },
-    [userId]
+    [userId, cutId]
   );
 
   return { data, loading, updateDay, toggleArrayField };

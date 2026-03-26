@@ -3,17 +3,16 @@
 import { useState, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useDailyLog } from "@/hooks/useDailyLog";
+import { calculateBMR, calculateNEAT } from "@/lib/bmr";
+import type { Cut, UserProfile } from "@/lib/types";
 import Card from "./Card";
 import MealItem from "./MealItem";
 import Checkbox from "./Checkbox";
 import OptionButton from "./OptionButton";
 import Toast from "./Toast";
 import {
-  START_DATE, END_DATE, START_W, TARGET_W, BMR_V, NEAT_V,
-  PHASES, WCD, TARGETS, MG, AM, DR, WKS, ACTS, SUPPS,
   COLORS, FONT_MONO, FONT_SANS, INPUT_STYLE,
   CAT_LABELS, CAT_ACCENTS, EMPTY_DAY,
-  SCHEDULE, RULES, GROCERY,
 } from "@/lib/constants";
 import {
   parseDate, formatDate, getToday, daysBetween, clamp,
@@ -23,12 +22,21 @@ import {
 
 const { lime, red, blue, org, cyn, prp, pnk, bg, cd, bd, tx, mt, dm } = COLORS;
 
-export default function Tracker() {
+interface TrackerProps {
+  cut: Cut;
+  profile: UserProfile;
+}
+
+export default function Tracker({ cut, profile }: TrackerProps) {
   const { user, signOut } = useAuth();
   const [toast, setToast] = useState<string | null>(null);
 
+  const allMeals = Object.values(cut.meal_groups).flat();
+  const totalDays = daysBetween(cut.start_date, cut.end_date);
+
   const { data, loading, updateDay, toggleArrayField } = useDailyLog(
     user?.id,
+    cut.id,
     () => {
       setToast("Saved");
       setTimeout(() => setToast(null), 1500);
@@ -46,12 +54,12 @@ export default function Tracker() {
   const [cP, setCP] = useState("");
 
   const day = { ...EMPTY_DAY, ...data[sel] };
-  const ph = getPhase(sel);
-  const calT = getCalorieTarget(sel);
-  const waterT = getWaterTarget(sel);
-  const wc = WCD[sel] || null;
-  const dIn = clamp(daysBetween(START_DATE, sel) + 1, 1, 38);
-  const dLeft = clamp(daysBetween(sel, END_DATE), 0, 38);
+  const ph = getPhase(sel, cut.phases);
+  const calT = getCalorieTarget(sel, cut.phases, cut.water_cut_days);
+  const waterT = getWaterTarget(sel, cut.phases, cut.water_cut_days);
+  const wc = cut.water_cut_days[sel] || null;
+  const dIn = clamp(daysBetween(cut.start_date, sel) + 1, 1, totalDays);
+  const dLeft = clamp(daysBetween(sel, cut.end_date), 0, totalDays);
 
   const upd = useCallback(
     (p: Partial<typeof day>) => updateDay(sel, p),
@@ -63,9 +71,9 @@ export default function Tracker() {
   }
 
   // Calorie calculations
-  const mC = day.meals.reduce((s, id) => { const m = AM.find((x) => x.id === id); return s + (m ? m.c : 0); }, 0);
-  const mP = day.meals.reduce((s, id) => { const m = AM.find((x) => x.id === id); return s + (m ? m.p : 0); }, 0);
-  const dR = DR.find((r) => r.i === day.dinner);
+  const mC = day.meals.reduce((s, id) => { const m = allMeals.find((x) => x.id === id); return s + (m ? m.c : 0); }, 0);
+  const mP = day.meals.reduce((s, id) => { const m = allMeals.find((x) => x.id === id); return s + (m ? m.p : 0); }, 0);
+  const dR = cut.dinner_recipes.find((r) => r.i === day.dinner);
   const dC = dR ? dR.c : 0;
   const dP = dR ? dR.p : 0;
   const xC = (day.custom || []).reduce((s, m) => s + (m.c || 0), 0);
@@ -73,20 +81,25 @@ export default function Tracker() {
   const tIn = mC + dC + xC;
   const tPr = mP + dP + xP;
   const tef = Math.round(tIn * 0.08);
-  const wB = day.workout ? (WKS.find((w) => w.id === day.workout) || { b: 0 }).b : 0;
-  const aB = (day.walks || []).reduce((s, id) => { const a = ACTS.find((x) => x.id === id); return s + (a ? a.b : 0); }, 0);
-  const tOut = BMR_V + NEAT_V + tef + wB + aB;
-  const def = tOut - tIn;
-  const ou = tIn - calT;
+  const wB = day.workout ? (cut.workouts.find((w) => w.id === day.workout) || { b: 0 }).b : 0;
+  const aB = (day.walks || []).reduce((s, id) => { const a = cut.activities.find((x) => x.id === id); return s + (a ? a.b : 0); }, 0);
 
   // Weight tracking
   const wE = Object.entries(data)
     .filter((e) => e[1] && e[1].weight)
     .sort((a, b) => a[0].localeCompare(b[0]));
-  const lW = wE.length > 0 ? wE[wE.length - 1][1].weight! : START_W;
-  const cW = day.weight || lW;
-  const tL = START_W - cW;
-  const pct = clamp((tL / (START_W - TARGET_W)) * 100, 0, 100);
+  const lW = wE.length > 0 ? wE[wE.length - 1][1].weight! : cut.start_weight;
+  const currentWeight = day.weight || lW;
+
+  // Dynamic BMR/NEAT
+  const bmr = calculateBMR(currentWeight, profile.height_cm, profile.age, profile.gender);
+  const neat = calculateNEAT(currentWeight, cut.start_weight);
+  const tOut = bmr + neat + tef + wB + aB;
+  const def = tOut - tIn;
+  const ou = tIn - calT;
+
+  const tL = cut.start_weight - currentWeight;
+  const pct = clamp((tL / (cut.start_weight - cut.target_weight)) * 100, 0, 100);
 
   // Completion checks
   const cks = [
@@ -114,7 +127,7 @@ export default function Tracker() {
   }
 
   // Dinner filter
-  const fDR = DR.filter((r) => dF === "All" || r.g === dF).filter((r) => r.n.toLowerCase().includes(dS.toLowerCase()));
+  const fDR = cut.dinner_recipes.filter((r) => dF === "All" || r.g === dF).filter((r) => r.n.toLowerCase().includes(dS.toLowerCase()));
 
   function addCM() {
     if (!cN || !cC) return;
@@ -170,7 +183,7 @@ export default function Tracker() {
               <span style={{ fontSize: 16, fontWeight: 800, color: lime, letterSpacing: 1 }}>CUT TRACKER</span>
             </div>
             <p style={{ fontSize: 12, color: mt, fontFamily: FONT_MONO, marginTop: 4 }}>
-              P{ph.id} {ph.name} &bull; Day {dIn}/38 &bull; {dLeft}d left
+              P{ph.id} {ph.name} &bull; Day {dIn}/{totalDays} &bull; {dLeft}d left
             </p>
           </div>
           <div style={{ textAlign: "right" }}>
@@ -283,7 +296,7 @@ export default function Tracker() {
         {/* FOOD TAB */}
         {tab === "food" && (
           <div>
-            {Object.entries(MG).map(([cat, meals]) => (
+            {Object.entries(cut.meal_groups).map(([cat, meals]) => (
               <Card key={cat} title={CAT_LABELS[cat]} accent={CAT_ACCENTS[cat]}>
                 {meals.map((m) => (
                   <MealItem key={m.id} meal={m} on={day.meals.includes(m.id)} onTap={() => tog("meals", m.id)} />
@@ -408,7 +421,7 @@ export default function Tracker() {
         {tab === "burn" && (
           <div>
             <Card title={"🏋️ WORKOUT SESSION"} accent={red}>
-              {WKS.map((w) => {
+              {cut.workouts.map((w) => {
                 const s = day.workout === w.id;
                 return (
                   <OptionButton key={w.id} on={s} label={w.n} sub={w.d} val={w.b > 0 ? "-" + w.b : "—"} color={red} onTap={() => upd({ workout: s ? null : w.id })} />
@@ -416,7 +429,7 @@ export default function Tracker() {
               })}
             </Card>
             <Card title={"🚶 WALKING + 🔥 HIIT"} accent={org}>
-              {ACTS.map((a) => {
+              {cut.activities.map((a) => {
                 const s = (day.walks || []).includes(a.id);
                 return (
                   <OptionButton key={a.id} on={s} label={a.n} val={"-" + a.b} color={a.id.startsWith("hiit") ? pnk : org} onTap={() => tog("walks", a.id)} />
@@ -425,8 +438,8 @@ export default function Tracker() {
             </Card>
             <Card title={"📊 CALORIE BREAKDOWN"} accent={blue}>
               {[
-                { l: "BMR (resting metabolism)", v: BMR_V },
-                { l: "NEAT (daily activity)", v: NEAT_V },
+                { l: "BMR (resting metabolism)", v: bmr },
+                { l: "NEAT (daily activity)", v: neat },
                 { l: "TEF (food digestion)", v: tef },
                 { l: "Workout session", v: wB },
                 { l: "Walking + HIIT", v: aB },
@@ -436,6 +449,9 @@ export default function Tracker() {
                   <span style={{ fontSize: 14, fontFamily: FONT_MONO, fontWeight: 600, color: r.v > 0 ? tx : dm }}>{r.v}</span>
                 </div>
               ))}
+              <div style={{ fontSize: 11, color: dm, fontFamily: FONT_MONO, marginTop: 4, fontStyle: "italic" }}>
+                BMR calculated for {profile.height_cm}cm, {profile.age}y, {profile.gender === 'male' ? 'M' : 'F'}, {currentWeight}kg
+              </div>
               <div style={{ borderTop: "2px solid " + bd, marginTop: 6, paddingTop: 8 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
                   <span style={{ fontSize: 14, fontWeight: 700 }}>Total Burn</span>
@@ -477,11 +493,11 @@ export default function Tracker() {
               {day.weight && (
                 <div style={{ display: "flex", justifyContent: "center", gap: 20, marginTop: 8 }}>
                   <div style={{ textAlign: "center" }}>
-                    <div style={{ fontSize: 18, fontWeight: 800, fontFamily: FONT_MONO, color: lime }}>{(START_W - day.weight).toFixed(1)}</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, fontFamily: FONT_MONO, color: lime }}>{(cut.start_weight - day.weight).toFixed(1)}</div>
                     <div style={{ fontSize: 10, color: mt, fontWeight: 600 }}>KG LOST</div>
                   </div>
                   <div style={{ textAlign: "center" }}>
-                    <div style={{ fontSize: 18, fontWeight: 800, fontFamily: FONT_MONO, color: org }}>{(day.weight - TARGET_W).toFixed(1)}</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, fontFamily: FONT_MONO, color: org }}>{(day.weight - cut.target_weight).toFixed(1)}</div>
                     <div style={{ fontSize: 10, color: mt, fontWeight: 600 }}>TO GO</div>
                   </div>
                   <div style={{ textAlign: "center" }}>
@@ -515,8 +531,8 @@ export default function Tracker() {
 
             <Card title={"📊 OVERALL PROGRESS"} accent={lime}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                <span style={{ fontSize: 12, color: mt, fontFamily: FONT_MONO, fontWeight: 600 }}>111 kg</span>
-                <span style={{ fontSize: 12, color: lime, fontFamily: FONT_MONO, fontWeight: 600 }}>90 kg</span>
+                <span style={{ fontSize: 12, color: mt, fontFamily: FONT_MONO, fontWeight: 600 }}>{cut.start_weight} kg</span>
+                <span style={{ fontSize: 12, color: lime, fontFamily: FONT_MONO, fontWeight: 600 }}>{cut.target_weight} kg</span>
               </div>
               <div style={{ height: 16, background: bd, borderRadius: 8, overflow: "hidden" }}>
                 <div style={{ height: "100%", borderRadius: 8, width: pct + "%", background: "linear-gradient(90deg," + lime + ",#8bbc14)", transition: "width .5s" }} />
@@ -528,9 +544,9 @@ export default function Tracker() {
             </Card>
 
             <Card title={"🎯 MILESTONES"} accent={cyn}>
-              {TARGETS.map((tg, i) => {
+              {cut.milestones.map((tg, i) => {
                 const a = data[tg.d] ? data[tg.d].weight : null;
-                const cur = sel >= (i > 0 ? TARGETS[i - 1].d : START_DATE) && sel <= tg.d;
+                const cur = sel >= (i > 0 ? cut.milestones[i - 1].d : cut.start_date) && sel <= tg.d;
                 return (
                   <div key={tg.d} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: "1px solid " + bd, opacity: tg.d < sel && !cur ? 0.3 : 1 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -581,8 +597,8 @@ export default function Tracker() {
         {/* MORE TAB */}
         {tab === "more" && (
           <div>
-            <Card title={"💊 SUPPLEMENTS — " + (day.supplements || []).length + "/" + SUPPS.length} accent={prp}>
-              {SUPPS.map((s) => {
+            <Card title={"💊 SUPPLEMENTS — " + (day.supplements || []).length + "/" + cut.supplements.length} accent={prp}>
+              {cut.supplements.map((s) => {
                 const on = (day.supplements || []).includes(s.id);
                 return (
                   <button key={s.id} onClick={() => tog("supplements", s.id)} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 0", cursor: "pointer", background: "transparent", border: "none", borderBottom: "1px solid " + bd, color: tx, textAlign: "left" }}>
@@ -599,7 +615,7 @@ export default function Tracker() {
             </Card>
 
             <Card title={"📅 DAILY SCHEDULE"} accent={cyn}>
-              {SCHEDULE.map((item, i) => (
+              {cut.schedule.map((item, i) => (
                 <div key={i} style={{ display: "flex", gap: 10, padding: "5px 0", borderBottom: "1px solid " + bd }}>
                   <span style={{ fontSize: 12, color: cyn, fontFamily: FONT_MONO, fontWeight: 700, width: 42, flexShrink: 0 }}>{item[0]}</span>
                   <span style={{ fontSize: 13, fontWeight: 500 }}>{item[1]}</span>
@@ -608,7 +624,7 @@ export default function Tracker() {
             </Card>
 
             <Card title={"⚠️ THE RULES"} accent={red}>
-              {RULES.map((r, i) => (
+              {cut.rules.map((r, i) => (
                 <div key={i} style={{ fontSize: 13, color: mt, padding: "5px 0", borderBottom: "1px solid " + bd, fontWeight: 500 }}>
                   <span style={{ color: red, fontWeight: 800 }}>{i + 1}.</span> {r}
                 </div>
@@ -616,11 +632,42 @@ export default function Tracker() {
             </Card>
 
             <Card title={"🛒 WEEKLY GROCERY"} accent={lime}>
-              {GROCERY.map((item, i) => (
+              {cut.grocery.map((item, i) => (
                 <div key={i} style={{ fontSize: 13, color: mt, padding: "4px 0", borderBottom: "1px solid " + bd, fontWeight: 500 }}>
                   &bull; {item}
                 </div>
               ))}
+            </Card>
+
+            <Card title={"⚙️ CUT MANAGEMENT"} accent={cyn}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>
+                  <span style={{ color: mt }}>Current Cut:</span> <span style={{ color: lime }}>{cut.name}</span>
+                </div>
+                <div style={{ fontSize: 12, color: mt, fontFamily: FONT_MONO }}>
+                  {cut.start_date} → {cut.end_date}
+                </div>
+                <button
+                  onClick={() => window.location.href = '/cuts'}
+                  style={{ padding: 12, borderRadius: 10, border: "1px solid " + bd, background: cd, color: cyn, fontSize: 13, fontWeight: 700, fontFamily: FONT_MONO, cursor: "pointer" }}
+                >
+                  Manage Cuts & History
+                </button>
+              </div>
+            </Card>
+
+            <Card title={"📊 BMR INFO"} accent={blue}>
+              <div style={{ fontSize: 13, color: mt, lineHeight: 1.8 }}>
+                <div>Formula: <span style={{ color: tx, fontFamily: FONT_MONO }}>Mifflin-St Jeor</span></div>
+                <div>Height: <span style={{ color: tx, fontFamily: FONT_MONO }}>{profile.height_cm} cm</span></div>
+                <div>Age: <span style={{ color: tx, fontFamily: FONT_MONO }}>{profile.age} years</span></div>
+                <div>Gender: <span style={{ color: tx, fontFamily: FONT_MONO }}>{profile.gender === 'male' ? 'Male' : 'Female'}</span></div>
+                <div>Current weight: <span style={{ color: tx, fontFamily: FONT_MONO }}>{currentWeight} kg</span></div>
+                <div style={{ borderTop: "1px solid " + bd, marginTop: 8, paddingTop: 8 }}>
+                  <div>BMR: <span style={{ color: lime, fontFamily: FONT_MONO, fontWeight: 700 }}>{bmr} kcal</span></div>
+                  <div>NEAT: <span style={{ color: lime, fontFamily: FONT_MONO, fontWeight: 700 }}>{neat} kcal</span></div>
+                </div>
+              </div>
             </Card>
 
             {/* Export */}

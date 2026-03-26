@@ -2,8 +2,6 @@ export const START_DATE = "2026-03-24";
 export const END_DATE = "2026-05-01";
 export const START_W = 111;
 export const TARGET_W = 90;
-export const BMR_V = 2150;
-export const NEAT_V = 350;
 
 export interface CustomMeal {
   n: string;
