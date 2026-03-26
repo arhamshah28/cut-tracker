@@ -1,18 +1,21 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { useProfile } from "@/hooks/useProfile";
 import { useCut } from "@/hooks/useCut";
 import Tracker from "@/components/Tracker";
 import { COLORS, FONT_SANS } from "@/lib/constants";
+import { DEFAULT_CUT_TEMPLATE } from "@/lib/defaults";
+import { START_DATE, END_DATE, START_W, TARGET_W } from "@/lib/constants";
 
 export default function TrackerPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
-  const { profile, loading: profileLoading, hasProfile } = useProfile(user?.id);
-  const { cut, loading: cutLoading, hasCut } = useCut(user?.id);
+  const { profile, loading: profileLoading, hasProfile, updateProfile } = useProfile(user?.id);
+  const { cut, loading: cutLoading, hasCut, createCut } = useCut(user?.id);
+  const provisioning = useRef(false);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -20,17 +23,38 @@ export default function TrackerPage() {
     }
   }, [user, authLoading, router]);
 
+  // Auto-provision profile + legacy cut if missing (personal use defaults)
   useEffect(() => {
-    if (!authLoading && !profileLoading && user && !hasProfile) {
-      router.replace("/setup");
-    }
-  }, [user, authLoading, profileLoading, hasProfile, router]);
+    if (authLoading || profileLoading || cutLoading || !user || provisioning.current) return;
 
-  useEffect(() => {
-    if (!authLoading && !profileLoading && !cutLoading && user && hasProfile && !hasCut) {
-      router.replace("/cuts");
+    async function autoProvision() {
+      provisioning.current = true;
+
+      // Auto-create profile with defaults if missing
+      if (!hasProfile) {
+        await updateProfile({ height_cm: 180, age: 25, gender: "male" });
+      }
+
+      // Auto-create the original 38-day cut if no active cut
+      if (!hasCut) {
+        await createCut({
+          name: "38-Day Cut",
+          status: "active",
+          start_date: START_DATE,
+          end_date: END_DATE,
+          start_weight: START_W,
+          target_weight: TARGET_W,
+          ...DEFAULT_CUT_TEMPLATE,
+        });
+      }
+
+      provisioning.current = false;
     }
-  }, [user, authLoading, profileLoading, cutLoading, hasProfile, hasCut, router]);
+
+    if (!hasProfile || !hasCut) {
+      autoProvision();
+    }
+  }, [user, authLoading, profileLoading, cutLoading, hasProfile, hasCut]);
 
   const isLoading = authLoading || profileLoading || cutLoading || !user || !profile || !cut;
 
