@@ -30,25 +30,29 @@ export default function TrackerPage() {
     async function autoProvision() {
       provisioning.current = true;
 
-      // Auto-create profile with defaults if missing
-      if (!hasProfile) {
-        await updateProfile({ height_cm: 180, age: 25, gender: "male" });
-      }
+      try {
+        // Auto-create profile with defaults if missing
+        if (!hasProfile) {
+          await updateProfile({ height_cm: 180, age: 25, gender: "male" });
+        }
 
-      // Auto-create the original 38-day cut if no active cut
-      if (!hasCut) {
-        await createCut({
-          name: "38-Day Cut",
-          status: "active",
-          start_date: START_DATE,
-          end_date: END_DATE,
-          start_weight: START_W,
-          target_weight: TARGET_W,
-          ...DEFAULT_CUT_TEMPLATE,
-        });
+        // Auto-create the original 38-day cut if no active cut
+        if (!hasCut) {
+          await createCut({
+            name: "38-Day Cut",
+            status: "active",
+            start_date: START_DATE,
+            end_date: END_DATE,
+            start_weight: START_W,
+            target_weight: TARGET_W,
+            ...DEFAULT_CUT_TEMPLATE,
+          });
+        }
+      } catch (e) {
+        console.error("Auto-provision failed:", e);
+      } finally {
+        provisioning.current = false;
       }
-
-      provisioning.current = false;
     }
 
     if (!hasProfile || !hasCut) {

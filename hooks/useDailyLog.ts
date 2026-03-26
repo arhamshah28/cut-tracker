@@ -53,38 +53,52 @@ export function useDailyLog(
   const [data, setData] = useState<Record<string, DayEntry>>({});
   const [loading, setLoading] = useState(true);
   const supabase = createClient();
-  const saveInFlight = useRef(false);
+
+  // Store ALL mutable values in refs to avoid stale closures
   const userIdRef = useRef(userId);
   const cutIdRef = useRef(cutId);
+  const onSaveSuccessRef = useRef(onSaveSuccess);
+  const onSaveErrorRef = useRef(onSaveError);
+  const dataRef = useRef(data);
+
+  // Keep refs current on every render
   userIdRef.current = userId;
   cutIdRef.current = cutId;
+  onSaveSuccessRef.current = onSaveSuccess;
+  onSaveErrorRef.current = onSaveError;
+  dataRef.current = data;
 
-  const OFFLINE_KEY = `cuttracker_offline_${cutId || "default"}`;
+  const offlineKeyRef = useRef(`cuttracker_offline_${cutId || "default"}`);
+  offlineKeyRef.current = `cuttracker_offline_${cutId || "default"}`;
 
   // Fetch all logs on mount
   useEffect(() => {
     if (!userId || !cutId) return;
 
     async function fetchLogs() {
-      const { data: rows, error } = await supabase
-        .from("daily_logs")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("cut_id", cutId);
+      try {
+        const { data: rows, error } = await supabase
+          .from("daily_logs")
+          .select("*")
+          .eq("user_id", userId)
+          .eq("cut_id", cutId);
 
-      if (!error && rows) {
-        const mapped: Record<string, DayEntry> = {};
-        for (const row of rows) {
-          mapped[row.date] = rowToEntry(row);
+        if (!error && rows) {
+          const mapped: Record<string, DayEntry> = {};
+          for (const row of rows) {
+            mapped[row.date] = rowToEntry(row);
+          }
+          setData(mapped);
+        } else if (error) {
+          console.error("Fetch error:", error);
+          onSaveErrorRef.current?.("Failed to load data");
         }
-        setData(mapped);
-      } else if (error) {
-        console.error("Fetch error:", error);
-        onSaveError?.("Failed to load data");
+      } catch (e) {
+        console.error("Fetch exception:", e);
       }
 
       // Replay offline queue
-      await syncQueue(userId!, cutId!);
+      await syncQueue();
       setLoading(false);
     }
 
@@ -94,24 +108,24 @@ export function useDailyLog(
   // Listen for online event to sync offline queue
   useEffect(() => {
     if (!userId || !cutId) return;
-    const handler = () => syncQueue(userId, cutId);
+    const handler = () => syncQueue();
     window.addEventListener("online", handler);
     return () => window.removeEventListener("online", handler);
   }, [userId, cutId]);
 
-  // Save immediately — no debounce
-  async function saveNow(date: string, entry: DayEntry) {
+  // Core save function — reads everything from refs, never stale
+  async function saveToSupabase(date: string, entry: DayEntry) {
     const uid = userIdRef.current;
     const cid = cutIdRef.current;
     if (!uid || !cid) {
       console.error("Save skipped: no userId or cutId", { uid: !!uid, cid: !!cid });
-      onSaveError?.("Not logged in");
+      onSaveErrorRef.current?.("Not logged in");
       return;
     }
 
     if (!navigator.onLine) {
       enqueueOffline(date, entry);
-      onSaveError?.("Offline — saved locally");
+      onSaveErrorRef.current?.("Offline — saved locally");
       return;
     }
 
@@ -124,30 +138,38 @@ export function useDailyLog(
       if (error) {
         console.error("Supabase save error:", error.message, error.details, error.hint);
         enqueueOffline(date, entry);
-        onSaveError?.("Save failed: " + error.message);
+        onSaveErrorRef.current?.("Save failed: " + error.message);
       } else {
-        onSaveSuccess?.();
+        onSaveSuccessRef.current?.();
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       console.error("Save exception:", msg);
       enqueueOffline(date, entry);
-      onSaveError?.("Save error: " + msg);
+      onSaveErrorRef.current?.("Save error: " + msg);
     }
   }
 
   function enqueueOffline(date: string, entry: DayEntry) {
     try {
-      const queue: QueuedWrite[] = JSON.parse(localStorage.getItem(OFFLINE_KEY) || "[]");
+      const key = offlineKeyRef.current;
+      const queue: QueuedWrite[] = JSON.parse(localStorage.getItem(key) || "[]");
       const filtered = queue.filter((q) => q.date !== date);
       filtered.push({ date, entry, timestamp: Date.now() });
-      localStorage.setItem(OFFLINE_KEY, JSON.stringify(filtered));
-    } catch {}
+      localStorage.setItem(key, JSON.stringify(filtered));
+    } catch (e) {
+      console.error("Offline queue error:", e);
+    }
   }
 
-  async function syncQueue(uid: string, cid: string) {
+  async function syncQueue() {
+    const uid = userIdRef.current;
+    const cid = cutIdRef.current;
+    if (!uid || !cid) return;
+
     try {
-      const queue: QueuedWrite[] = JSON.parse(localStorage.getItem(OFFLINE_KEY) || "[]");
+      const key = offlineKeyRef.current;
+      const queue: QueuedWrite[] = JSON.parse(localStorage.getItem(key) || "[]");
       if (queue.length === 0) return;
 
       const remaining: QueuedWrite[] = [];
@@ -157,32 +179,32 @@ export function useDailyLog(
           .upsert(entryToRow(uid, q.date, cid, q.entry), { onConflict: "user_id,date,cut_id" });
         if (error) remaining.push(q);
       }
-      localStorage.setItem(OFFLINE_KEY, JSON.stringify(remaining));
-      if (remaining.length < queue.length) onSaveSuccess?.();
-    } catch {}
+      localStorage.setItem(key, JSON.stringify(remaining));
+      if (remaining.length < queue.length) onSaveSuccessRef.current?.();
+    } catch (e) {
+      console.error("Sync queue error:", e);
+    }
   }
+
+  // Stable save ref — never stale, always calls current saveToSupabase
+  const saveRef = useRef(saveToSupabase);
+  saveRef.current = saveToSupabase;
 
   const updateDay = useCallback(
     (date: string, partial: Partial<DayEntry>) => {
       setData((prev) => {
         const current = { ...EMPTY_DAY, ...prev[date] };
         const updated = { ...current, ...partial };
-        const next = { ...prev, [date]: updated };
-        return next;
-      });
-      // Save immediately OUTSIDE the state updater
-      setData((current) => {
-        const entry = { ...EMPTY_DAY, ...current[date] };
-        saveNow(date, entry);
-        return current; // don't change state, just read it
+        // Fire save OUTSIDE the updater via microtask
+        Promise.resolve().then(() => saveRef.current(date, updated));
+        return { ...prev, [date]: updated };
       });
     },
-    [userId, cutId]
+    [] // no deps — saveRef is always current
   );
 
   const toggleArrayField = useCallback(
     (date: string, field: keyof DayEntry, id: string) => {
-      let updatedEntry: DayEntry | null = null;
       setData((prev) => {
         const current = { ...EMPTY_DAY, ...prev[date] };
         const arr = (current[field] as string[]) || [];
@@ -190,15 +212,12 @@ export function useDailyLog(
           ...current,
           [field]: arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id],
         };
-        updatedEntry = updated;
+        // Fire save OUTSIDE the updater via microtask
+        Promise.resolve().then(() => saveRef.current(date, updated));
         return { ...prev, [date]: updated };
       });
-      // Save immediately after state update
-      setTimeout(() => {
-        if (updatedEntry) saveNow(date, updatedEntry);
-      }, 0);
     },
-    [userId, cutId]
+    [] // no deps — saveRef is always current
   );
 
   return { data, loading, updateDay, toggleArrayField };

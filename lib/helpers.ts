@@ -32,14 +32,21 @@ export function getMonthShort(s: string): string {
   return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][parseDate(s).getMonth()];
 }
 
-export function getPhase(d: string, phases: Phase[]) {
+const FALLBACK_PHASE: Phase = { id: 0, name: "Default", start: "2000-01-01", end: "2099-12-31", calT: 1000, wL: 6 };
+
+export function getPhase(d: string, phases: Phase[]): Phase {
+  if (!phases || phases.length === 0) return FALLBACK_PHASE;
   return phases.find((p) => d >= p.start && d <= p.end) || phases[0];
 }
 
 export function getCalorieTarget(d: string, phases: Phase[], waterCutDays: Record<string, WaterCutDay>): number {
-  return waterCutDays[d] ? waterCutDays[d].calT : getPhase(d, phases).calT;
+  if (waterCutDays[d]) return waterCutDays[d].calT;
+  const phase = getPhase(d, phases);
+  return phase.calT;
 }
 
 export function getWaterTarget(d: string, phases: Phase[], waterCutDays: Record<string, WaterCutDay>): number {
-  return waterCutDays[d] ? waterCutDays[d].wL : getPhase(d, phases).wL;
+  if (waterCutDays[d]) return waterCutDays[d].wL;
+  const phase = getPhase(d, phases);
+  return phase.wL;
 }

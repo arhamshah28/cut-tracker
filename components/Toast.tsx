@@ -8,7 +8,7 @@ export default function Toast({ message, visible }: { message: string | null; vi
     <div
       style={{
         position: "fixed",
-        bottom: 80,
+        bottom: "calc(80px + env(safe-area-inset-bottom, 0px))",
         left: "50%",
         transform: visible ? "translateX(-50%) translateY(0)" : "translateX(-50%) translateY(20px)",
         opacity: visible ? 1 : 0,
